@@ -664,10 +664,15 @@ void sendDIO(void) {
       return;
    }
 
-   // AntiJam
+   // AntiJam --- do not generate new packets during protocol
    uint16_t time;
    time = ieee154e_getASNFirstBytes();
-   if (time > ANTIJAM_STARTING_TIME-100) return;
+   //if (time > ANTIJAM_STARTING_TIME-100) return;
+   if ( (ieee154e_getASNFirstBytes() > antiJam_getStartingSlot() - 100)
+		&& (ieee154e_getASNFirstBytes() < antiJam_getStopSlot())
+   ){
+	return;
+   }
 
    // if you get here, all good to send a DIO
 
@@ -833,10 +838,15 @@ void sendDAO(void) {
 
    //return;
 
-   //antiJam
+   // AntiJam --- do not generate new packets during protocol
    uint16_t time;
    time = ieee154e_getASNFirstBytes();
-   if (time > ANTIJAM_STARTING_TIME && time < ANTIJAM_STOP_TIME) return;
+   //if (time > ANTIJAM_STARTING_TIME-100) return;
+   if ( (ieee154e_getASNFirstBytes() > antiJam_getStartingSlot() - 100)
+	 && (ieee154e_getASNFirstBytes() < antiJam_getStopSlot())
+   ){
+	   return;
+   }
 
    // if you get here, you start construct DAO
 

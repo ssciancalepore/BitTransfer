@@ -16,18 +16,18 @@ The BitTransfer protocol can be configured by tuning some parameters available i
 
 Specifically, all the files to be edited are located in the folder `./openwsn-fw-antiJamming/openstack/02a-MAClow/`.
 
-In the file `IEEE802154E.h`, you can configure the byte-size of the message to be exchanged by the involved devices, by defining the `MSG_LENGTH` variable, as well as the starting time of the protocol and its maximum duration, setting the variables `ANTIJAM_STARTING_TIME` and `ANTIJAM_STOP_TIME`, respectively.
+In the file `IEEE802154E.h`, you can configure the byte-size of the message to be exchanged by the involved devices, by defining the `MSG_LENGTH` variable.
 ```c
 //antiJamming protocol parameters definitions
-#define ANTIJAM_STARTING_TIME 1250
-#define ANTIJAM_STOP_TIME 10850
 
 #define MSG_LENGTH 640
 ```
 
-Then, in the file `IEEE802154E.c`, it is possible to define the message to be exchanged between the two devices. For instance, the default configuration message exchanged in the proof-of-concept is the following:
+Then, in the file `IEEE802154E.c`, it is possible to define the starting time of the protocol, and the message to be exchanged between the two devices. For instance, the default configuration message exchanged in the proof-of-concept is the following:
 ```c
-/antiJamming protocol configuration
+//antiJamming protocol configuration
+
+ieee154e_vars.synch_starting_slot = 1250;
 
 ieee154e_vars.local_bit_counter_tx = 0;
 ieee154e_vars.local_bit_counter_rx = 0;
@@ -38,6 +38,12 @@ ieee154e_vars.message_Tx[0] = 1;
 ieee154e_vars.message_Tx[MSG_LENGTH/2] = 1;
 ieee154e_vars.message_Tx[MSG_LENGTH/2+200] = 1;
 ieee154e_vars.message_Tx[MSG_LENGTH-1] = 1;
+```
+
+It is also possible to define the paramters for the configuration of the synchronization protocol, based on the nodes in the network, as in the following:
+```c
+ieee154e_vars.numAcks_expected = 1;
+ieee154e_vars.synchronization_delay = 8; //slots
 ```
 
 You can setup the message that you prefer or extend the code to dynamically establish the message to be sent, on purpose.
@@ -61,4 +67,4 @@ sudo python cc2538-bsl.py --bootloader-invert-lines -e -w -v -p /dev/ttyUSB1 03o
 4. In your terminal you will see that the devices will run the BitTransfer protocol, exchanging the bits of the message one by one.
 
 ## License
-Being part of the <a href="https://github.com/openwsn-berkeley/">OpenWSN</a> project, `BitTransfer` is released under the BSD3 Clause "New" or "Revised" License <a href="LICENSE">license</a>.
+Being developed as a sub-project of the <a href="https://github.com/openwsn-berkeley/">OpenWSN</a> project, `BitTransfer` is released under the BSD3 Clause "New" or "Revised" License <a href="LICENSE">license</a>.

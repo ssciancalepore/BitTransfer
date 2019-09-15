@@ -63,6 +63,9 @@ void     activity_ri8(PORT_TIMER_WIDTH capturedTime);
 void     activity_rie6(void);
 void     activity_ri9(PORT_TIMER_WIDTH capturedTime);
 
+void activity_sync_protocol(void);
+void activity_sync_1(void);
+
 // frame validity check
 bool     isValidRxFrame(ieee802154_header_iht* ieee802514_header);
 bool     isValidAck(ieee802154_header_iht*     ieee802514_header,
@@ -101,6 +104,10 @@ void     isr_ieee154e_newSlot(opentimers_id_t id);
 void     isr_ieee154e_timer(opentimers_id_t id);
 
 //port_INLINE void activity_jam1(PORT_TIMER_WIDTH capturedTime);
+uint16_t antiJam_getStartingSlot(void);
+uint16_t antiJam_getStopSlot(void);
+
+void antiJam_reset_parameters(void);
 
 //=========================== admin ===========================================
 
@@ -117,7 +124,7 @@ void ieee154e_init(void) {
     memset(&ieee154e_dbg,0,sizeof(ieee154e_dbg_t));
     
     // set singleChannel to 0 to enable channel hopping.
-    ieee154e_vars.singleChannel     = 11;
+    ieee154e_vars.singleChannel     = 23;
     ieee154e_vars.isAckEnabled      = TRUE;
     ieee154e_vars.isSecurityEnabled = FALSE;
     ieee154e_vars.slotDuration      = TsSlotDuration;
@@ -167,13 +174,50 @@ void ieee154e_init(void) {
     //antiJamming protocol configuration
     ieee154e_vars.local_bit_counter_tx = 0;
     ieee154e_vars.local_bit_counter_rx = 0;
+    ieee154e_vars.antiJam_starting_slot = 65000; // initialized very high
+    ieee154e_vars.antiJam_stop_slot = 65000; // initialized very high
+    ieee154e_vars.silent_slots = 100;
 
     memset(&ieee154e_vars.message_Tx[0], 0, MSG_LENGTH);
     memset(&ieee154e_vars.message_Rx[0], 0, MSG_LENGTH);
     ieee154e_vars.message_Tx[0] = 1;
     ieee154e_vars.message_Tx[MSG_LENGTH/2] = 1;
-    ieee154e_vars.message_Tx[MSG_LENGTH/2+200] = 1;
+    ieee154e_vars.message_Tx[MSG_LENGTH/2+200] = 0;
     ieee154e_vars.message_Tx[MSG_LENGTH-1] = 1;
+
+    // synchronization protocol configuration
+    ieee154e_vars.synch_starting_slot = 1250;
+    ieee154e_vars.amITx = 0;
+    ieee154e_vars.msg_sent = 0;
+    ieee154e_vars.s_sync_state = 0;
+
+    ieee154e_vars.numAcks_expected = 1;
+    ieee154e_vars.synchronization_delay = 8; //slots
+
+    //switch (idmanager_getMyID(ADDR_64B)->addr_64b[7]){
+    //case TOP_NODE_1:
+    //	ieee154e_vars.acknowledgement_delay = 1; //slots
+    //	break;
+    //case TOP_NODE_2:
+    //	ieee154e_vars.acknowledgement_delay = 2; //slots
+    //	break;
+    //case TOP_NODE_3:
+    //	ieee154e_vars.acknowledgement_delay = 3; //slots
+    //	break;
+    //case TOP_NODE_4:
+    //	ieee154e_vars.acknowledgement_delay = 4; //slots
+    //	break;
+    //case TOP_NODE_5:
+	//	ieee154e_vars.acknowledgement_delay = 5; //slots
+	//	break;
+    //case TOP_NODE_6:
+	//	ieee154e_vars.acknowledgement_delay = 6; //slots
+	//	break;
+    //default:
+    	//ieee154e_vars.acknowledgement_delay = 7; //slots
+    	//break;
+    //}
+
 }
 
 //=========================== public ==========================================
@@ -315,23 +359,35 @@ void isr_ieee154e_newSlot(opentimers_id_t id) {
       adaptive_sync_countCompensationTimeout();
 #endif
 
-//SoC code
-//      if (!idmanager_getIsDAGroot() && ieee154e_vars.asn.bytes0and1 == ANTIJAM_STOP_TIME + 1){
-//      		// declare myself desynchronized
-//      		changeIsSync(FALSE);
-//
-//      		// log the error
-//      		openserial_printError(COMPONENT_IEEE802154E,ERR_DESYNCHRONIZED,
-//      							  (errorparameter_t)ieee154e_vars.slotOffset,
-//      							  (errorparameter_t)0);
-//
-//      		// abort
-//      		endSlot();
-//      		return;
-//      	}
+      // synchronization protocol
+      if (ieee154e_vars.asn.bytes0and1 == ieee154e_vars.synch_starting_slot
+    		 || (ieee154e_vars.asn.bytes0and1 > ieee154e_vars.synch_starting_slot && ieee154e_vars.sync_started && !ieee154e_vars.sync_finished)
+			 ){
 
-      activity_ti1ORri1();
+    	  if (ieee154e_vars.asn.bytes0and1 == ieee154e_vars.synch_starting_slot){
+			  openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+									 (errorparameter_t)600);
+    	  }
+
+
+    	  if (ieee154e_vars.s_sync_state == 0) ieee154e_vars.s_sync_state = S_SYNC_INIT;
+    	  activity_sync_protocol();
+
+
+      } else {
+
+//    	  if (ieee154e_vars.s_sync_state != 0){
+//    	  		//+1 because the slot is incremented in ti1OrRi1
+//    		  openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//								  (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+//								  (errorparameter_t)649);
+//    	  	}
+
+    	  activity_ti1ORri1();
+      }
    }
+
    ieee154e_dbg.num_newSlot++;
 }
 
@@ -580,7 +636,7 @@ port_INLINE void activity_synchronize_newSlot(void) {
         radio_rfOff();
         
         // update record of current channel
-        ieee154e_vars.freq = (openrandom_get16b()&0x0F) + 11;
+        ieee154e_vars.freq = ieee154e_vars.singleChannel; //(openrandom_get16b()&0x0F) + 11;
         
         // configure the radio to listen to the default synchronizing channel
         radio_setFrequency(ieee154e_vars.freq);
@@ -756,7 +812,7 @@ port_INLINE void activity_synchronize_endOfFrame(PORT_TIMER_WIDTH capturedTime) 
          }
       }
 
-      //if (ieee154e_vars.asn.bytes0and1 > ANTIJAM_STOP_TIME) break;
+      //if (ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_stop_slot) break;
 
       // toss the IEEE802.15.4 header -- this does not include IEs as they are processed
       // next.
@@ -857,6 +913,8 @@ port_INLINE void activity_ti1ORri1(void) {
     bool        changeToRX=FALSE;
     bool        couldSendEB=FALSE;
 
+
+    OpenQueueEntry_t*          sync_dataToSend;
     OpenQueueEntry_t* eb;
 
     // my addition
@@ -919,7 +977,7 @@ port_INLINE void activity_ti1ORri1(void) {
         schedule_advanceSlot();
         
         // calculate the frequency to transmit on
-        ieee154e_vars.freq = calculateFrequency(schedule_getChannelOffset()); 
+        ieee154e_vars.freq = calculateFrequency(schedule_getChannelOffset());
         
         // find the next one
         ieee154e_vars.nextActiveSlotOffset = schedule_getNextActiveSlotOffset();
@@ -957,36 +1015,192 @@ port_INLINE void activity_ti1ORri1(void) {
         return;
     }
 
-    if(idmanager_getIsDAGroot() && ieee154e_vars.asn.bytes0and1 == 1200){
-    	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
-							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
-							 (errorparameter_t)500);
-    }
-
-    //antiJam code
-//    if(ieee154e_vars.asn.bytes0and1 == ANTIJAM_STARTING_TIME && idmanager_getIsDAGroot()){
-//    	//ieee154e_vars.info_recv = 1;
-//		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
-//											 (errorparameter_t)ieee154e_vars.slotOffset,
-//											 (errorparameter_t)100);
-//		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
-//											 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
-//											 (errorparameter_t)101);
-//		leds_debug_on();
-//    }
 
     temp_cellType = schedule_getType();
 
-    if(ieee154e_vars.asn.bytes0and1 > ANTIJAM_STARTING_TIME
-    		&& ieee154e_vars.asn.bytes0and1 < ANTIJAM_STOP_TIME
+    //synchronization protocol
+    if (!ieee154e_vars.sync_finished
+    		&& (temp_cellType == CELLTYPE_TXRX || temp_cellType == CELLTYPE_RX)
+	){
+
+    	// I already received the necessary number of acks
+    	if (ieee154e_vars.s_sync_state == S_WAIT_FINAL){
+
+    		// increment the counter for the sync delay
+    		ieee154e_vars.sync_delay_expire_counter++;
+
+    		// evaluate if the sync delay have passed
+    		if (ieee154e_vars.sync_delay_expire_counter == ieee154e_vars.synchronization_delay){
+
+    			// it's time to transmit the final packet
+    			openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+									 (errorparameter_t)611);
+
+				cellType = CELLTYPE_TXRX;
+
+				sync_dataToSend = openqueue_getFreePacketBuffer(COMPONENT_SIXTOP);
+				sync_dataToSend->l2_frameType = IEEE154_TYPE_BEACON;
+				sync_dataToSend->l2_nextORpreviousHop.type        = ADDR_16B;
+				sync_dataToSend->l2_nextORpreviousHop.addr_16b[0] = 0xff;
+				sync_dataToSend->l2_nextORpreviousHop.addr_16b[1] = 0xff;
+				sync_dataToSend->l2_IEListPresent = IEEE154_IELIST_NO;
+				sync_dataToSend->l2_securityLevel = FALSE;
+				sync_dataToSend->l2_retriesLeft = 1;
+				ieee802154_prependHeader(sync_dataToSend,
+										   sync_dataToSend->l2_frameType,
+										   sync_dataToSend->l2_IEListPresent,
+										   0,
+										   &(sync_dataToSend->l2_nextORpreviousHop)
+										   );
+
+
+				 packetfunctions_reserveFooterSize(sync_dataToSend,2);
+				 sync_dataToSend->l2_numTxAttempts++;
+				 sync_dataToSend->owner = COMPONENT_SIXTOP_TO_IEEE802154E;
+
+				 ieee154e_vars.s_sync_state = S_FINAL_MESSAGE_TX;
+
+    		}
+
+    	}
+
+		// waiting for acks
+		if (ieee154e_vars.s_sync_state == S_TX_WAIT_ACK
+
+		){
+			cellType = CELLTYPE_RX;
+
+			// increment the counter for the sync delay
+			ieee154e_vars.sync_delay_expire_counter++;
+
+			if (ieee154e_vars.sync_delay_expire_counter == ieee154e_vars.synchronization_delay){
+
+				//I was waiting for acks, but the delay expired... something has gone wrong. Reset.
+				openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+									 (errorparameter_t)620);
+
+				antiJam_reset_parameters();
+			}
+		}
+
+
+		if( (ieee154e_vars.s_sync_state == S_RX_WAITING)
+
+		){
+
+			if(temp_cellType == CELLTYPE_TXRX || temp_cellType == CELLTYPE_RX){
+				ieee154e_vars.sync_active_slot_counter++;
+			}
+
+			if(ieee154e_vars.sync_active_slot_counter == ieee154e_vars.sync_random_slot){
+
+				//change to S_TX_SYNC
+				ieee154e_vars.s_sync_state = S_TX_SYNC;
+
+			} else {
+				// We are in the sync and we are waiting. This is a RX slot
+				cellType = CELLTYPE_RX;
+			}
+		}
+
+		if(ieee154e_vars.s_sync_state == S_SYNC_RECEIVED
+
+		){
+			//start packet received, wait for your turn to send the ack
+			ieee154e_vars.ack_delay_counter++;
+
+			if(ieee154e_vars.ack_delay_counter == ieee154e_vars.acknowledgement_delay && !ieee154e_vars.amITx
+					&& !ieee154e_vars.sync_finished
+					){
+				//prepare acknowledgement to be sent
+				openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+									 (errorparameter_t)607);
+
+				cellType = CELLTYPE_TXRX;
+
+				sync_dataToSend = openqueue_getFreePacketBuffer(COMPONENT_SIXTOP);
+				sync_dataToSend->l2_frameType = IEEE154_TYPE_BEACON;
+				sync_dataToSend->l2_nextORpreviousHop.type        = ADDR_16B;
+				sync_dataToSend->l2_nextORpreviousHop.addr_16b[0] = 0xff;
+				sync_dataToSend->l2_nextORpreviousHop.addr_16b[1] = 0xff;
+				sync_dataToSend->l2_IEListPresent = IEEE154_IELIST_NO;
+				sync_dataToSend->l2_securityLevel = FALSE;
+				sync_dataToSend->l2_retriesLeft = 1;
+				ieee802154_prependHeader(sync_dataToSend,
+										   sync_dataToSend->l2_frameType,
+										   sync_dataToSend->l2_IEListPresent,
+										   0,
+										   &(sync_dataToSend->l2_nextORpreviousHop)
+										   );
+
+
+				 packetfunctions_reserveFooterSize(sync_dataToSend,2);
+				 sync_dataToSend->l2_numTxAttempts++;
+				 sync_dataToSend->owner = COMPONENT_SIXTOP_TO_IEEE802154E;
+
+
+			} else {
+				// I will be silent, this is a RX slot
+				cellType = CELLTYPE_RX;
+			}
+
+		}
+
+		if(ieee154e_vars.s_sync_state == S_TX_SYNC
+
+		){
+			// The waiting period expired, transmit the packet
+			openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+										 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+										 (errorparameter_t)604);
+
+			cellType = CELLTYPE_TXRX;
+
+			sync_dataToSend = openqueue_getFreePacketBuffer(COMPONENT_SIXTOP);
+			sync_dataToSend->l2_frameType = IEEE154_TYPE_BEACON;
+			sync_dataToSend->l2_nextORpreviousHop.type        = ADDR_16B;
+			sync_dataToSend->l2_nextORpreviousHop.addr_16b[0] = 0xff;
+			sync_dataToSend->l2_nextORpreviousHop.addr_16b[1] = 0xff;
+			sync_dataToSend->l2_IEListPresent = IEEE154_IELIST_NO;
+			sync_dataToSend->l2_securityLevel = FALSE;
+			sync_dataToSend->l2_retriesLeft = 1;
+			ieee802154_prependHeader(sync_dataToSend,
+									   sync_dataToSend->l2_frameType,
+									   sync_dataToSend->l2_IEListPresent,
+									   0,
+									   &(sync_dataToSend->l2_nextORpreviousHop)
+									   );
+
+
+			 packetfunctions_reserveFooterSize(sync_dataToSend,2);
+			 sync_dataToSend->l2_numTxAttempts++;
+			 sync_dataToSend->owner = COMPONENT_SIXTOP_TO_IEEE802154E;
+
+			 //I will be the TX node
+			 ieee154e_vars.amITx = TRUE;
+		}
+
+		//end of code for sync protocol
+    }
+
+    // bitTransfer protocol
+    if(ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_starting_slot
+    		//&& ieee154e_vars.asn.bytes0and1 < ieee154e_vars.antiJam_stop_slot
 			&& temp_cellType != CELLTYPE_SERIALRX
+			&& ieee154e_vars.sync_finished
 			){ // about 30 seconds
+
 		if (ieee154e_isSynch() == TRUE){
 
-			if(idmanager_getIsDAGroot()){
+			//if(idmanager_getIsDAGroot()){
+			// If I am the transmitter and I have not sent the message
+			if(ieee154e_vars.amITx == TRUE && ieee154e_vars.msg_sent == 0){
 
 				//antiJam code -- TX --- extract bit and decide if transmitting or not
-				//uint16_t bit_to_be_transmitted = ieee154e_vars.asn.bytes0and1 - ANTIJAM_STARTING_TIME;
+				//uint16_t bit_to_be_transmitted = ieee154e_vars.asn.bytes0and1 - ieee154e_vars.antiJam_starting_slot;
 
 				if(ieee154e_vars.local_bit_counter_tx<=MSG_LENGTH){
 					//we are delivering the message
@@ -1038,12 +1252,21 @@ port_INLINE void activity_ti1ORri1(void) {
 					}
 
 				} else{
-					// DAG root, bit of the message finished, for now do not transmit anything (it can be avoided by
-					// precisely tuning the duration of the protocol
+					// message transmitter, bit of the message finished, do not transmit anything
+
 					cellType = CELLTYPE_RX;
+
+					ieee154e_vars.msg_sent = TRUE;
+					ieee154e_vars.antiJam_stop_slot = ieee154e_vars.asn.bytes0and1 + 1;
+
+					openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+										 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+										 (errorparameter_t)106);
+
+					antiJam_reset_parameters();
 				}
 			} else{
-				// not DAG root, but in the right temporal frame, you have to receive
+				// not a transmitter, but in the right temporal frame, you have to receive
 				cellType = CELLTYPE_RX;
 			}
 		}
@@ -1322,6 +1545,34 @@ port_INLINE void activity_ti2(void) {
     ieee154e_vars.radioOnThisSlot=TRUE;
     // change state
     changeState(S_TXDATAREADY);
+
+    if(ieee154e_vars.s_sync_state == S_TX_SYNC){
+    	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+							 (errorparameter_t)605);
+
+    	ieee154e_vars.s_sync_state = S_TX_WAIT_ACK;
+    	//ieee154e_vars.sync_finished = TRUE;
+    }
+
+    if(ieee154e_vars.s_sync_state == S_SYNC_RECEIVED){
+    	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+							 (errorparameter_t)608);
+
+    	ieee154e_vars.s_sync_state = S_ACK_SENT;
+    	//ieee154e_vars.sync_finished = TRUE;
+    }
+
+    if(ieee154e_vars.s_sync_state == S_FINAL_MESSAGE_TX){
+    	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+    								 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+    								 (errorparameter_t)612);
+
+    	ieee154e_vars.s_sync_state = S_SYNC_FINISHED;
+    	ieee154e_vars.sync_finished = TRUE;
+    	ieee154e_vars.antiJam_starting_slot = ieee154e_vars.asn.bytes0and1 + 1;// + ieee154e_vars.silent_slots;
+    }
 }
 
 port_INLINE void activity_tie1(void) {
@@ -1349,8 +1600,8 @@ port_INLINE void activity_ti3(void) {
     );
     // radiotimer_schedule(DURATION_tt3);
     
-//    if(ieee154e_vars.asn.bytes0and1 > ANTIJAM_STARTING_TIME
-//        		&& ieee154e_vars.asn.bytes0and1 < ANTIJAM_STOP_TIME
+//    if(ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_starting_slot
+//        		&& ieee154e_vars.asn.bytes0and1 < ieee154e_vars.antiJam_stop_slot
 //    			){
 //		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
 //							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
@@ -1789,7 +2040,7 @@ port_INLINE void activity_ri2(void) {
     // radiotimer_schedule(DURATION_rt2);
     
     // configure the radio for that frequency
-    //if (ieee154e_vars.asn.bytes0and1 > ANTIJAM_STARTING_TIME) ieee154e_vars.freq = ((ieee154e_vars.freq-11)%NUM_SOC_FREQUENCIES)+11;
+    //if (ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_starting_slot) ieee154e_vars.freq = ((ieee154e_vars.freq-11)%NUM_SOC_FREQUENCIES)+11;
 
     radio_setFrequency(ieee154e_vars.freq);
 
@@ -1838,13 +2089,23 @@ port_INLINE void activity_ri3(void) {
 port_INLINE void activity_rie2(void) {
 
 	//antiJam code
-	if (ieee154e_vars.asn.bytes0and1 > ANTIJAM_STARTING_TIME
-			&& ieee154e_vars.asn.bytes0and1 < ANTIJAM_STOP_TIME
-		&& !idmanager_getIsDAGroot()
+	if (ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_starting_slot
+			//&& ieee154e_vars.asn.bytes0and1 < ieee154e_vars.antiJam_stop_slot
+		&& !ieee154e_vars.amITx
 		){
 
 		//a bit has not been received, already set to zero, simply increment
 		ieee154e_vars.local_bit_counter_rx = ieee154e_vars.local_bit_counter_rx + 1;
+
+		if (ieee154e_vars.local_bit_counter_rx == MSG_LENGTH){
+
+			ieee154e_vars.antiJam_stop_slot = ieee154e_vars.asn.bytes0and1 + 2;
+			antiJam_reset_parameters();
+
+//			openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//								 (errorparameter_t)ieee154e_vars.antiJam_starting_slot,
+//								 (errorparameter_t)206);
+		}
 	}
 
    // abort
@@ -1963,10 +2224,64 @@ port_INLINE void activity_ri5(PORT_TIMER_WIDTH capturedTime) {
             &ieee154e_vars.dataReceived->l1_crc
         );
 
-        //antiJamming protocol receiver code
-		if (ieee154e_vars.asn.bytes0and1 > ANTIJAM_STARTING_TIME
-			&& ieee154e_vars.asn.bytes0and1 < ANTIJAM_STOP_TIME
-			&& !idmanager_getIsDAGroot()
+        // synch protocol code
+        if (ieee154e_vars.s_sync_state == S_ACK_SENT){
+        	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+							 (errorparameter_t)613);
+
+        	ieee154e_vars.s_sync_state = S_SYNC_FINISHED;
+        	ieee154e_vars.sync_finished = TRUE;
+
+        	//set antJam starting time
+        	ieee154e_vars.antiJam_starting_slot = ieee154e_vars.asn.bytes0and1 + 1;// + ieee154e_vars.silent_slots;
+
+        	break;
+        }
+
+
+        if(ieee154e_vars.s_sync_state == S_RX_WAITING){
+            	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+        							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+        							 (errorparameter_t)606);
+            	ieee154e_vars.s_sync_state = S_SYNC_RECEIVED;
+            	//ieee154e_vars.sync_finished = TRUE;
+
+            	break;
+            }
+
+        if(ieee154e_vars.s_sync_state == S_TX_WAIT_ACK){
+        	openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+								 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+								 (errorparameter_t)609);
+        	ieee154e_vars.received_acks_counter++;
+
+        	if(ieee154e_vars.received_acks_counter == ieee154e_vars.numAcks_expected
+        			&& ieee154e_vars.amITx
+				){
+//        		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+//									 (errorparameter_t)610);
+
+        		ieee154e_vars.s_sync_state = S_WAIT_FINAL;
+        		//ieee154e_vars.sync_finished = TRUE;
+        	} else {
+
+        		// something went wrong
+        		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+									 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+									 (errorparameter_t)621);
+
+        		antiJam_reset_parameters();
+        	}
+
+        	break;
+        }
+
+        // bitTransfer receiver code
+		if (ieee154e_vars.asn.bytes0and1 > ieee154e_vars.antiJam_starting_slot
+			//&& ieee154e_vars.asn.bytes0and1 < ieee154e_vars.antiJam_stop_slot
+			//&& !idmanager_getIsDAGroot()
 		){
 
 			//a bit has been received
@@ -1976,6 +2291,20 @@ port_INLINE void activity_ri5(PORT_TIMER_WIDTH capturedTime) {
 			openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
 								 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
 								 (errorparameter_t)202);
+//			openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//								 (errorparameter_t)ieee154e_vars.local_bit_counter_rx,
+//								 (errorparameter_t)203);
+
+			if (ieee154e_vars.local_bit_counter_rx == MSG_LENGTH){
+				// finish protocol and reset parameters
+				ieee154e_vars.antiJam_stop_slot = ieee154e_vars.asn.bytes0and1 + 1;
+
+				antiJam_reset_parameters();
+
+//				openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//									 (errorparameter_t)ieee154e_vars.antiJam_starting_slot,
+//									 (errorparameter_t)205);
+			}
 
 		}
 
@@ -3247,4 +3576,148 @@ void endSlot(void) {
 
 bool ieee154e_isSynch(void) {
    return ieee154e_vars.isSync;
+}
+
+
+// synchronization protocol
+port_INLINE void activity_sync_protocol(void){
+
+	switch(ieee154e_vars.s_sync_state){
+	case S_SYNC_INIT:
+
+		// extract random, prepare pkt and wait.
+		activity_sync_1();
+		//endSlot();
+		changeState(S_SLEEP);
+		break;
+	case S_RX_WAITING:
+	case S_SYNC_RECEIVED:
+	case S_TX_SYNC:
+	case S_TX_WAIT_ACK:
+	case S_WAIT_FINAL:
+	case S_ACK_SENT:
+
+		activity_ti1ORri1();
+
+		break;
+	default:
+
+		// this should not happen
+		openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+							 (errorparameter_t)ieee154e_vars.asn.bytes0and1,
+							 (errorparameter_t)650);
+
+		endSlot();
+	}
+
+}
+
+
+port_INLINE void activity_sync_1(void){
+
+	//preliminary operations (from ti1OrRi1)
+	// increment ASN (do this first so debug pins are in sync)
+	incrementAsnOffset();
+
+	// wiggle debug pins
+	debugpins_slot_toggle();
+	if (ieee154e_vars.slotOffset==0) {
+		debugpins_frame_toggle();
+	}
+
+	// desynchronize if needed
+	if (idmanager_getIsDAGroot()==FALSE) {
+		if(ieee154e_vars.deSyncTimeout > ieee154e_vars.numOfSleepSlots){
+			ieee154e_vars.deSyncTimeout -= ieee154e_vars.numOfSleepSlots;
+		} else {
+			// Reset sleep slots
+			ieee154e_vars.numOfSleepSlots = 1;
+
+			// declare myself desynchronized
+			changeIsSync(FALSE);
+
+			// log the error
+			openserial_printError(COMPONENT_IEEE802154E,ERR_DESYNCHRONIZED,
+								  (errorparameter_t)ieee154e_vars.slotOffset,
+								  (errorparameter_t)0);
+
+			// update the statistics
+			ieee154e_stats.numDeSync++;
+
+			leds_debug_off();
+
+			// abort
+			endSlot();
+			return;
+		}
+	}
+
+	// if the previous slot took too long, we will not be in the right state
+	if (ieee154e_vars.state!=S_SLEEP) {
+		// log the error
+		openserial_printError(COMPONENT_IEEE802154E,ERR_WRONG_STATE_IN_STARTSLOT,
+							(errorparameter_t)ieee154e_vars.state,
+							(errorparameter_t)ieee154e_vars.slotOffset);
+		// abort
+		endSlot();
+		return;
+	}
+
+	// Reset sleep slots
+	ieee154e_vars.numOfSleepSlots = 1;
+
+	// new code
+	uint16_t random_sync;
+	uint8_t MAX_RAND;
+
+	 //extract the random number
+	 MAX_RAND = 20;
+	 random_sync = (openrandom_get16b()%MAX_RAND) + 1; //+1 is needed to avoid 0
+
+	 // this is to let any node transmit its own message
+	 if (ieee154e_vars.msg_sent == TRUE) random_sync = MAX_RAND+1;
+
+	 //ieee154e_vars.sync_random_slot = ieee154e_vars.asn.bytes0and1 + random_sync;
+	 ieee154e_vars.sync_random_slot = random_sync;
+	 ieee154e_vars.sync_active_slot_counter = 0;
+	 ieee154e_vars.ack_delay_counter = 0;
+	 ieee154e_vars.received_acks_counter = 0;
+	 ieee154e_vars.sync_delay_expire_counter = 0;
+
+//     openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+//						 (errorparameter_t)random_sync,
+//						 (errorparameter_t)601);
+     openserial_printInfo(COMPONENT_IEEE802154E,ERR_OK,
+     						 (errorparameter_t)ieee154e_vars.sync_random_slot,
+     						 (errorparameter_t)602);
+
+	 // the sync protocol now has started
+	 ieee154e_vars.sync_started = TRUE;
+
+	 // changeState
+	 ieee154e_vars.s_sync_state = S_RX_WAITING;
+
+}
+
+uint16_t antiJam_getStartingSlot(void){
+	return ieee154e_vars.antiJam_starting_slot;
+}
+
+uint16_t antiJam_getStopSlot(void){
+	return ieee154e_vars.antiJam_stop_slot;
+}
+
+void antiJam_reset_parameters(void){
+
+	ieee154e_vars.synch_starting_slot = ieee154e_getASNFirstBytes() + 1000;
+	ieee154e_vars.antiJam_starting_slot = 65000;
+	//ieee154e_vars.antiJam_stop_slot = 65000;
+	ieee154e_vars.sync_started = 0;
+	ieee154e_vars.sync_finished = 0;
+	ieee154e_vars.s_sync_state = 0;
+
+	ieee154e_vars.amITx = 0;
+	//ieee154e_vars.msg_sent = 0;
+	ieee154e_vars.local_bit_counter_tx = 0;
+	ieee154e_vars.local_bit_counter_rx = 0;
 }

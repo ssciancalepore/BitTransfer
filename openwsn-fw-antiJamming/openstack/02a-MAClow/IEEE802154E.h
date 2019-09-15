@@ -39,11 +39,11 @@ static const uint8_t ebIEsBytestream[] = {
 
 #define NUM_CHANNELS                16 // number of channels to channel hop on
 #define TXRETRIES                    3 // number of MAC retries before declaring failed
-#define TX_POWER                    13 // 1=-25dBm, 31=0dBm (max value)
+#define TX_POWER                    31 // 1=-25dBm, 31=0dBm (max value)
 #define RESYNCHRONIZATIONGUARD       5 // in 32kHz ticks. min distance to the end of the slot to successfully synchronize
 #define US_PER_TICK                 30 // number of us per 32kHz clock tick
 #define MAXKAPERIOD               1000 // in slots: 2000@15ms per slot -> ~30 seconds. Max value used by adaptive synchronization.
-#define DESYNCTIMEOUT             2333 // in slots: 2333@15ms per slot -> ~35 seconds. A larger DESYNCTIMEOUT is needed if using a larger KATIMEOUT.
+#define DESYNCTIMEOUT             12333 // in slots: 2333@15ms per slot -> ~35 seconds. A larger DESYNCTIMEOUT is needed if using a larger KATIMEOUT.
 #define LIMITLARGETIMECORRECTION     5 // threshold number of ticks to declare a timeCorrection "large"
 #define LENGTH_IEEE154_MAX         128 // max length of a valid radio packet
 #define DUTY_CYCLE_WINDOW_LIMIT    (0xFFFFFFFF>>1) // limit of the dutycycle window
@@ -104,10 +104,15 @@ static const uint8_t ebIEsBytestream[] = {
 
 
 //antiJamming protocol parameters definitions
-#define ANTIJAM_STARTING_TIME 1250
-#define ANTIJAM_STOP_TIME 10850
-
 #define MSG_LENGTH 640
+
+// node parameters
+#define TOP_NODE_1 0xe8
+#define TOP_NODE_2 0x26
+#define TOP_NODE_3 0x62
+#define TOP_NODE_4 0x85
+#define TOP_NODE_5 0x71
+#define TOP_NODE_6 0x00
 
 
 /**
@@ -156,6 +161,16 @@ typedef enum {
    S_RXPROC                  = 0x19,   // processing received data
    S_RXDATA_JAM              = 0x1a,   // creating jamming packet
    S_TXDATA_JAM              = 0x1b,   // receive SFD jamming packet
+
+   S_SYNC_INIT               = 0x1c,   // synchronization protocol to be started
+   S_RX_WAITING              = 0x1d,   // random slot extracted, waiting
+   S_TX_SYNC                 = 0x1e,
+   S_TX_WAIT_ACK             = 0x1f,
+   S_SYNC_RECEIVED           = 0x20,
+   S_ACK_SENT                = 0x21,
+   S_WAIT_FINAL              = 0x22,
+   S_FINAL_MESSAGE_TX        = 0x23,
+   S_SYNC_FINISHED           = 0x24,
 } ieee154e_state_t;
 
 #define  TIMESLOT_TEMPLATE_ID         0x00
@@ -279,8 +294,28 @@ typedef struct {
    //anti-Jamming parameters
    bool                      message_Tx[MSG_LENGTH];     // vector of the bits of the message to be transmitted
    bool                      message_Rx[MSG_LENGTH];     // vector of the bits of the message to be received
+   bool					     amITx;                   // activated if I am the transmitter of the message
+   bool                      msg_sent; 				  // activated if I have already sent the message
+   uint16_t                  antiJam_starting_slot;
+   uint16_t					 antiJam_stop_slot;
+   uint8_t					 silent_slots;            // slots to wait after sync to start sending message
+
+   uint16_t					 synch_starting_slot;
+   uint8_t                   s_sync_state;            // state of the FSM for the synchronization protocol
+   bool                      sync_started;			  // the sync phase started
+   bool                      sync_finished;           // the synch phase has finished
    uint16_t                  local_bit_counter_tx;    // counter of the bits we have transmitted
    uint16_t                  local_bit_counter_rx;    // counter of the bits we have transmitted
+
+   //OpenQueueEntry_t*          sync_dataToSend;         // pointer to the synchronization data to send
+   uint16_t                  sync_random_slot;		     // random slot to be waited for tx;
+   uint8_t                   sync_active_slot_counter;
+   uint8_t                   acknowledgement_delay;
+   uint8_t                   ack_delay_counter;        // counter that counts when I have to transmit to ack
+   uint8_t					 received_acks_counter;    // counter that counts how many acks received
+   uint8_t					 numAcks_expected;
+   uint8_t                   synchronization_delay;
+   uint8_t					 sync_delay_expire_counter; // counter that counts how many slots elapsed from the sync pkt
 
 } ieee154e_vars_t;
 

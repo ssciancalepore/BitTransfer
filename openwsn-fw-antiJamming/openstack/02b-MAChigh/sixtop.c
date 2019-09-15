@@ -744,7 +744,7 @@ port_INLINE void sixtop_sendEB(void) {
         return;
     }
 
-    //my adding, antiJam
+    //my adding, not allow for chain network topology
     if (idmanager_getIsDAGroot() == FALSE) return;
 
 //    if (idmanager_getIsDAGroot() &&
@@ -881,7 +881,11 @@ port_INLINE void sixtop_sendKA(void) {
     }
 
     // antiJam: do not generate new KAs after the starting of the protocol
-    if (ieee154e_getASNFirstBytes() > ANTIJAM_STARTING_TIME - 100) return;
+    if ( (ieee154e_getASNFirstBytes() > antiJam_getStartingSlot() - 100)
+    		&& (ieee154e_getASNFirstBytes() < antiJam_getStopSlot())
+    ){
+    	return;
+    }
 
     kaNeighAddr = neighbors_getKANeighbor(sixtop_vars.kaPeriod);
     if (kaNeighAddr==NULL) {
